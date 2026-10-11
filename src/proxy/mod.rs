@@ -1023,7 +1023,7 @@ async fn dispatch(
     // always read in full; every other surface leaves a served stream open.
     let opened = if wire == Wire::Video {
         client
-            .infer(chosen, wire, &body)
+            .infer(chosen, wire, body)
             .await
             .map(Opened::Complete)
     } else {
