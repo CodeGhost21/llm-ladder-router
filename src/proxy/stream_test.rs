@@ -254,7 +254,7 @@ async fn a_finished_surplus_stream_is_priced_at_the_fresh_list_price() {
     );
     upstream.send(USAGE).unwrap();
     drop(upstream);
-    let response = relay(opened(&url).await, ProviderKind::Surplus, meter).await;
+    let response = relay(opened(&url).await, ProviderKind::Surplus, meter, None).await;
     axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
