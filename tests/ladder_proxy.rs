@@ -2366,3 +2366,84 @@ async fn a_keyless_conversation_reaches_surplus_keyed_by_its_system_prompt() {
     assert_eq!(bodies[0]["session_id"], key.as_str());
     assert_eq!(bodies[1]["prompt_cache_key"], key.as_str());
 }
+
+/// Starts a mock Surplus whose chat completions answer with `response`.
+async fn surplus_answering(response: fn() -> axum::response::Response) -> String {
+    let state = MockState {
+        behavior: Behavior::Serve("Morph".to_string()),
+        price_per_1m: 0.10,
+        recorded: Arc::new(Mutex::new(Recorded::default())),
+    };
+    let answer = move || async move { response() };
+    let app = Router::new()
+        .route("/api/markets/{model}", get(surplus_order_book))
+        .route("/v1/buyer/me", get(surplus_balance))
+        .route("/{prefix}/v1/chat/completions", post(answer))
+        .route("/v1/chat/completions", post(answer))
+        .with_state(state);
+    serve(app).await
+}
+
+async fn chat(router: &str, stream: bool) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{router}/v1/chat/completions"))
+        .json(&serde_json::json!({
+            "model": "flash",
+            "stream": stream,
+            "messages": [{ "role": "user", "content": "hi" }],
+        }))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_buffered_surplus_answer_reports_its_charge_as_usage_cost() {
+    // What Surplus really sends: the seller's BYOK zero in the body, the
+    // buyer's charge in micro-USD in a header.
+    let surplus = surplus_answering(|| {
+        (
+            [("x-si-buyer-cost-micro", "23")],
+            Json(serde_json::json!({
+                "provider": "Morph",
+                "choices": [],
+                "usage": { "prompt_tokens": 32, "completion_tokens": 30, "cost": 0, "is_byok": true },
+            })),
+        )
+            .into_response()
+    })
+    .await;
+    let (openrouter, _) = mock_openrouter(Behavior::Serve("DeepInfra".to_string()), 0.20).await;
+    let router = start_router(&config_for(&surplus, &openrouter, 0.15)).await;
+
+    let body: serde_json::Value = chat(&router, false).await.json().await.unwrap();
+    assert_eq!(body["usage"]["cost"], 0.000_023);
+    assert_eq!(body["usage"]["prompt_tokens"], 32);
+}
+
+#[tokio::test]
+async fn a_streamed_surplus_answer_reports_its_charge_as_usage_cost() {
+    let surplus = surplus_answering(|| {
+        (
+            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+            "data: {\"provider\":\"Morph\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n\
+             data: {\"choices\":[],\"usage\":{\"prompt_tokens\":32,\"completion_tokens\":39,\"buyer_cost_micro\":4}}\n\n\
+             data: [DONE]\n\n",
+        )
+            .into_response()
+    })
+    .await;
+    let (openrouter, _) = mock_openrouter(Behavior::Serve("DeepInfra".to_string()), 0.20).await;
+    let router = start_router(&config_for(&surplus, &openrouter, 0.15)).await;
+
+    let text = chat(&router, true).await.text().await.unwrap();
+    let usage = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<serde_json::Value>(data).ok())
+        .find(|event| !event["usage"].is_null())
+        .unwrap();
+    assert_eq!(usage["usage"]["cost"], 0.000_004);
+    assert!(text.starts_with("data: {\"provider\":\"Morph\""));
+    assert!(text.ends_with("data: [DONE]\n\n"));
+}
