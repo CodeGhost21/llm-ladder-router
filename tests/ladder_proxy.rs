@@ -2175,3 +2175,129 @@ async fn a_media_request_is_never_session_pinned() {
     assert!(response.headers().get("x-ladder-session").is_none());
     assert!(response.headers().get("x-ladder-pinned").is_none());
 }
+
+/// Starts a mock Surplus whose chat completions answer with an event stream
+/// that sends exactly the chunks the test pushes, when it pushes them.
+async fn gated_streaming_surplus() -> (String, tokio::sync::mpsc::UnboundedSender<&'static str>) {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
+    let receiver = Arc::new(tokio::sync::Mutex::new(Some(receiver)));
+    let state = MockState {
+        behavior: Behavior::Serve("Z.ai".to_string()),
+        price_per_1m: 0.10,
+        recorded: Arc::new(Mutex::new(Recorded::default())),
+    };
+    let stream = move || {
+        let receiver = receiver.clone();
+        async move {
+            let receiver = receiver.lock().await.take().unwrap();
+            let chunks = futures_util::stream::unfold(receiver, |mut receiver| async move {
+                let chunk = receiver.recv().await?;
+                Some((Ok::<_, std::convert::Infallible>(chunk), receiver))
+            });
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                axum::body::Body::from_stream(chunks),
+            )
+        }
+    };
+    let app = Router::new()
+        .route("/api/markets/{model}", get(surplus_order_book))
+        .route("/v1/buyer/me", get(surplus_balance))
+        .route("/{prefix}/v1/chat/completions", post(stream.clone()))
+        .route("/v1/chat/completions", post(stream))
+        .with_state(state);
+    (serve(app).await, sender)
+}
+
+#[tokio::test]
+async fn a_streamed_answer_reaches_the_caller_as_it_is_generated() {
+    use futures_util::StreamExt;
+
+    let (surplus, upstream) = gated_streaming_surplus().await;
+    let (openrouter, _) = mock_openrouter(Behavior::Serve("DeepInfra".to_string()), 0.20).await;
+    let router = start_router(&config_for(&surplus, &openrouter, 0.15)).await;
+
+    const FIRST: &str = "data: {\"provider\":\"Morph\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+    upstream.send(FIRST).unwrap();
+    let response = reqwest::Client::new()
+        .post(format!("{router}/v1/chat/completions"))
+        .json(&serde_json::json!({
+            "model": "flash",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "hi" }],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-ladder-sub-provider"], "Morph");
+
+    // The upstream is still generating. A router that buffers the stream
+    // holds this chunk back until the end, and the timeout fires.
+    let mut body = response.bytes_stream();
+    let first = tokio::time::timeout(std::time::Duration::from_secs(2), body.next())
+        .await
+        .expect("the stream was buffered: no chunk arrived while the upstream was still open")
+        .unwrap()
+        .unwrap();
+    assert_eq!(first, FIRST.as_bytes());
+
+    upstream.send("data: [DONE]\n\n").unwrap();
+    drop(upstream);
+    let mut rest = Vec::new();
+    while let Some(chunk) = body.next().await {
+        rest.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(rest, b"data: [DONE]\n\n");
+}
+
+#[tokio::test]
+async fn a_failed_streaming_rung_still_advances_the_ladder() {
+    let (surplus, sp_recorded) = mock_surplus(
+        Behavior::Fail(StatusCode::SERVICE_UNAVAILABLE, "no_healthy_sellers".to_string()),
+        0.10,
+    )
+    .await;
+    let (openrouter, _) = mock_openrouter(Behavior::Serve("DeepInfra".to_string()), 0.20).await;
+    let router = start_router(&config_for(&surplus, &openrouter, 0.15)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{router}/v1/chat/completions"))
+        .json(&serde_json::json!({
+            "model": "flash",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "hi" }],
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-ladder-provider"], "openrouter");
+    assert_eq!(sp_recorded.lock().unwrap().bodies.len(), 1);
+}
+
+#[tokio::test]
+async fn a_session_reaches_surplus_as_its_sticky_routing_keys() {
+    let (surplus, sp_recorded) = mock_surplus(Behavior::Serve("Z.ai".to_string()), 0.10).await;
+    let (openrouter, _) = mock_openrouter(Behavior::Serve("DeepInfra".to_string()), 0.20).await;
+    let router = start_router(&config_for(&surplus, &openrouter, 0.15)).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{router}/v1/chat/completions"))
+        .header("x-ladder-session", "hive-builder-1")
+        .json(&serde_json::json!({
+            "model": "flash",
+            "messages": [{ "role": "user", "content": "hi" }],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    // Surplus resells through OpenRouter, which keys sticky routing — and so
+    // the seller holding the warm prompt cache — on these two fields.
+    let body = sp_recorded.lock().unwrap().bodies[0].clone();
+    assert_eq!(body["session_id"], "hive-builder-1");
+    assert_eq!(body["prompt_cache_key"], "hive-builder-1");
+}
