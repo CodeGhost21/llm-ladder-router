@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
 use super::*;
-use crate::config::UsageSink;
+use crate::usage::UsageSink;
 use crate::provider::Dispatched;
 
 const FIRST: &str = "data: {\"provider\":\"Morph\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
