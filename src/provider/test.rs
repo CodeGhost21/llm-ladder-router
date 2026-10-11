@@ -1086,7 +1086,12 @@ fn a_session_reaches_surplus_and_openrouter_as_both_sticky_routing_keys() {
 #[test]
 fn a_callers_own_session_keys_are_never_overwritten() {
     let mut body = serde_json::json!({ "session_id": "mine", "prompt_cache_key": "cache" });
-    apply_session(&mut body, Some("router"), ProviderKind::Surplus, Wire::OpenAi);
+    apply_session(
+        &mut body,
+        Some("router"),
+        ProviderKind::Surplus,
+        Wire::OpenAi,
+    );
     assert_eq!(body["session_id"], "mine");
     assert_eq!(body["prompt_cache_key"], "cache");
 }
@@ -1103,7 +1108,11 @@ fn no_session_key_is_sent_without_a_session_elsewhere_or_off_the_chat_surface() 
     assert!(untouched(Some("s"), ProviderKind::Mistral, Wire::OpenAi));
     assert!(untouched(Some("s"), ProviderKind::Surplus, Wire::Anthropic));
     assert!(untouched(Some("s"), ProviderKind::Surplus, Wire::Responses));
-    assert!(untouched(Some("s"), ProviderKind::OpenRouter, Wire::Embeddings));
+    assert!(untouched(
+        Some("s"),
+        ProviderKind::OpenRouter,
+        Wire::Embeddings
+    ));
 }
 
 #[test]

@@ -904,7 +904,11 @@ async fn choose(
 /// The caller's response is already built and is not touched: the answer it
 /// was built from is moved onto a task of its own, read there for its figures,
 /// logged, and queued for the usage feed if one is running.
-fn observe(meter: stream::Meter, kind: crate::config::ProviderKind, dispatched: crate::provider::Dispatched) {
+fn observe(
+    meter: stream::Meter,
+    kind: crate::config::ProviderKind,
+    dispatched: crate::provider::Dispatched,
+) {
     tokio::spawn(async move {
         let figures = crate::usage::figures(
             kind,
@@ -996,7 +1000,11 @@ enum Attempt {
     /// and the upstream answer the response was built from, for the usage
     /// record — `None` for a relayed stream, which records its own usage as
     /// it ends.
-    Served(Response, Option<String>, Option<crate::provider::Dispatched>),
+    Served(
+        Response,
+        Option<String>,
+        Option<crate::provider::Dispatched>,
+    ),
     /// The upstream failed on its own account, and whether it was refusing on
     /// purpose or simply broken.
     Advance {
@@ -1022,7 +1030,10 @@ async fn dispatch(
     // A video job is polled after submission and its body rewritten, so it is
     // always read in full; every other surface leaves a served stream open.
     let opened = if wire == Wire::Video {
-        client.infer(chosen, wire, &body).await.map(Opened::Complete)
+        client
+            .infer(chosen, wire, &body)
+            .await
+            .map(Opened::Complete)
     } else {
         client.open(chosen, wire, &body).await
     };

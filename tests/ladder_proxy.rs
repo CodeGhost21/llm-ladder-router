@@ -2217,7 +2217,8 @@ async fn a_streamed_answer_reaches_the_caller_as_it_is_generated() {
     let (openrouter, _) = mock_openrouter(Behavior::Serve("DeepInfra".to_string()), 0.20).await;
     let router = start_router(&config_for(&surplus, &openrouter, 0.15)).await;
 
-    const FIRST: &str = "data: {\"provider\":\"Morph\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+    const FIRST: &str =
+        "data: {\"provider\":\"Morph\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
     upstream.send(FIRST).unwrap();
     let response = reqwest::Client::new()
         .post(format!("{router}/v1/chat/completions"))
@@ -2254,7 +2255,10 @@ async fn a_streamed_answer_reaches_the_caller_as_it_is_generated() {
 #[tokio::test]
 async fn a_failed_streaming_rung_still_advances_the_ladder() {
     let (surplus, sp_recorded) = mock_surplus(
-        Behavior::Fail(StatusCode::SERVICE_UNAVAILABLE, "no_healthy_sellers".to_string()),
+        Behavior::Fail(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no_healthy_sellers".to_string(),
+        ),
         0.10,
     )
     .await;

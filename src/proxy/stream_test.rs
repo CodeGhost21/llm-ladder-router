@@ -11,10 +11,11 @@ use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
 use super::*;
-use crate::usage::UsageSink;
 use crate::provider::Dispatched;
+use crate::usage::UsageSink;
 
-const FIRST: &str = "data: {\"provider\":\"Morph\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+const FIRST: &str =
+    "data: {\"provider\":\"Morph\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
 const USAGE: &str =
     "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":13,\"completion_tokens\":16}}\n\n";
 
