@@ -1267,7 +1267,8 @@ async fn remember(
 ///
 /// The configured header wins; otherwise native Claude Code and Codex
 /// identifiers, then the identifiers the two APIs already carry, are used so
-/// an unmodified client still gets sticky routing.
+/// an unmodified client still gets sticky routing. A caller with none of them
+/// is named by its system prompt; see [`crate::session::prefix_session`].
 fn session_of(state: &State, headers: &HeaderMap, body: &serde_json::Value) -> Option<String> {
     if !state.config.sessions.enabled {
         return None;
@@ -1300,6 +1301,7 @@ fn session_of(state: &State, headers: &HeaderMap, body: &serde_json::Value) -> O
         })
         .map(|session| session.trim().to_string())
         .filter(|session| !session.is_empty())
+        .or_else(|| crate::session::prefix_session(body))
 }
 
 /// Reads one UTF-8 request header as an owned session identifier.
