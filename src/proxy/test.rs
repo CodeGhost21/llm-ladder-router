@@ -718,12 +718,31 @@ fn glm_flash_prices() -> crate::pricing::ModelPrices {
     ))
 }
 
+/// Only the usage event is reserialized to restate the buyer's charge.
+fn assert_relayed_with_buyer_cost(body: &[u8], upstream: &str) {
+    let body = std::str::from_utf8(body).unwrap();
+    let actual: Vec<_> = body.lines().collect();
+    let expected: Vec<_> = upstream.lines().collect();
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        if expected.contains("buyer_cost_micro") {
+            let actual: serde_json::Value =
+                serde_json::from_str(actual.strip_prefix("data: ").unwrap()).unwrap();
+            let mut expected: serde_json::Value =
+                serde_json::from_str(expected.strip_prefix("data: ").unwrap()).unwrap();
+            expected["usage"]["cost"] = serde_json::json!(0.0);
+            assert_eq!(actual, expected);
+        } else {
+            assert_eq!(*actual, expected);
+        }
+    }
+}
+
 #[tokio::test]
-async fn a_served_stream_is_relayed_unchanged_and_its_cost_reaches_the_sink() {
+async fn a_served_stream_restates_the_buyer_cost_and_records_the_reported_market_cost() {
     let (body, record) = serve_one(REPORTED_STREAM, Some(glm_flash_prices())).await;
 
-    // The caller gets the stream byte for byte, usage chunk included.
-    assert_eq!(&body[..], REPORTED_STREAM.as_bytes());
+    assert_relayed_with_buyer_cost(&body, REPORTED_STREAM);
 
     assert_eq!(record["ladder"], "memory-flash");
     assert_eq!(record["rung"], 0);
@@ -742,7 +761,7 @@ async fn a_served_stream_is_relayed_unchanged_and_its_cost_reaches_the_sink() {
 async fn an_unpriced_surplus_call_is_priced_at_the_fresh_list_price() {
     let (body, record) = serve_one(UNPRICED_STREAM, Some(glm_flash_prices())).await;
 
-    assert_eq!(&body[..], UNPRICED_STREAM.as_bytes());
+    assert_relayed_with_buyer_cost(&body, UNPRICED_STREAM);
     let market = record["market_usd"].as_f64().unwrap();
     assert!((market - 0.000_009_95).abs() < 1e-15, "{market}");
     assert_eq!(record["market_source"], "list_price");
