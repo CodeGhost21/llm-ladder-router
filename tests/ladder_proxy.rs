@@ -2305,3 +2305,33 @@ async fn a_session_reaches_surplus_as_its_sticky_routing_keys() {
     assert_eq!(body["session_id"], "hive-builder-1");
     assert_eq!(body["prompt_cache_key"], "hive-builder-1");
 }
+
+#[tokio::test]
+async fn an_openhuman_prompt_cache_key_reaches_surplus_unchanged_and_keys_its_session() {
+    let (surplus, sp_recorded) = mock_surplus(Behavior::Serve("Z.ai".to_string()), 0.10).await;
+    let (openrouter, _) = mock_openrouter(Behavior::Serve("DeepInfra".to_string()), 0.20).await;
+    let router = start_router(&config_for(&surplus, &openrouter, 0.15)).await;
+
+    // OpenHuman (tinyagents) sends no session header. It names the stable
+    // prompt prefix it wants kept warm as `tap-<layout fingerprint>` in the
+    // OpenAI `prompt_cache_key`, the same key on every turn of a seat.
+    let response = reqwest::Client::new()
+        .post(format!("{router}/v1/chat/completions"))
+        .json(&serde_json::json!({
+            "model": "flash",
+            "prompt_cache_key": "tap-145feedd38f5b7dc",
+            "messages": [{ "role": "user", "content": "hi" }],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers()["x-ladder-session"],
+        "tap-145feedd38f5b7dc"
+    );
+
+    let body = sp_recorded.lock().unwrap().bodies[0].clone();
+    assert_eq!(body["prompt_cache_key"], "tap-145feedd38f5b7dc");
+    assert_eq!(body["session_id"], "tap-145feedd38f5b7dc");
+}

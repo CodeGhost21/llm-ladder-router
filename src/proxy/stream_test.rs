@@ -204,3 +204,21 @@ async fn a_caller_hanging_up_mid_stream_still_records_what_was_relayed() {
     assert_eq!(record["completion_tokens"], 16);
     drop(upstream);
 }
+
+#[tokio::test]
+async fn a_stream_that_ends_before_its_first_chunk_is_relayed_empty() {
+    let (url, upstream) = gated_upstream().await;
+    drop(upstream);
+    let response = relay(opened(&url).await, ProviderKind::Surplus, meter(None)).await;
+
+    assert!(response.headers().get(HEADER_SUB_PROVIDER).is_none());
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(body.is_empty());
+}
+
+#[test]
+fn an_unrelayable_stream_is_a_bad_gateway() {
+    assert_eq!(unrelayable().status(), axum::http::StatusCode::BAD_GATEWAY);
+}
