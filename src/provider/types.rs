@@ -92,6 +92,27 @@ pub struct Dispatched {
     pub buyer_cost_micro: Option<f64>,
 }
 
+/// What [`super::Client::open`] produced: a response read to the end, or a
+/// served stream whose body is still arriving.
+#[derive(Debug)]
+pub enum Opened {
+    /// Read in full, exactly as [`super::Client::infer`] would have: every
+    /// non-streamed answer and every failure, streamed or not.
+    Complete(Dispatched),
+    /// A 2xx event stream, relayed as it arrives.
+    Streaming(Streaming),
+}
+
+/// A served event stream whose body has not been read yet.
+#[derive(Debug)]
+pub struct Streaming {
+    /// Status and content type; the body is empty and the sub-provider and
+    /// charge are unknown until the stream itself says so.
+    pub head: Dispatched,
+    /// The upstream response, its body unread.
+    pub response: reqwest::Response,
+}
+
 /// Reads a `Retry-After` header in its delta-seconds form.
 ///
 /// A zero is `None` rather than a zero-length cooldown: an upstream saying
