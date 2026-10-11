@@ -438,5 +438,18 @@ fn served_by(body: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The sub-provider named by the first event of a stream that carries one.
+///
+/// A streamed answer states its serving provider on every chunk, the same
+/// `provider` field a buffered one carries once, so the first chunk is enough
+/// to pin a session to it. Comment lines and keep-alives are skipped.
+#[must_use]
+pub fn served_by_in_stream(chunk: &[u8]) -> Option<String> {
+    chunk
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| line.strip_prefix(b"data:"))
+        .find_map(|data| served_by(data.trim_ascii()))
+}
+
 #[cfg(test)]
 mod test;

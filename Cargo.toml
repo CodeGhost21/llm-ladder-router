@@ -42,6 +42,9 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 # Upstream HTTP client for marketplace calls. `rustls` avoids a system OpenSSL
 # dependency; `stream` is required to relay streaming completions.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
+# Relaying a served event stream chunk by chunk while its usage is read off
+# the same bytes. Already in the tree through `reqwest` and `axum`.
+futures-util = { version = "0.3", default-features = false }
 # `config.toml` and every marketplace payload are deserialized with serde.
 serde = { version = "1", features = ["derive"] }
 # Marketplace bodies are relayed and patched as untyped JSON so unknown fields

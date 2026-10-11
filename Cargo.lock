@@ -580,6 +580,7 @@ version = "0.2.1"
 dependencies = [
  "axum",
  "dotenvy",
+ "futures-util",
  "humantime",
  "humantime-serde",
  "reqwest",
