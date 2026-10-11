@@ -82,7 +82,23 @@ async fn sink() -> (Feed, Arc<Mutex<Vec<serde_json::Value>>>) {
     );
     let url = format!("{}/usage", serve(app).await);
     let config = crate::config::Config::parse(&format!(
-        "[usage_sink]\nurl = \"{url}\"\ntoken_env = \"LADDER_TEST_UNSET_USAGE_TOKEN\"\nmax_batch = 1\n"
+        r#"
+        [providers.surplus]
+        kind = "surplus"
+        base_url = "http://127.0.0.1:1"
+        api_key_env = "LADDER_TEST_UNSET_KEY"
+
+        [usage_sink]
+        url = "{url}"
+        token_env = "LADDER_TEST_UNSET_USAGE_TOKEN"
+        max_batch = 1
+
+        [[ladders]]
+        name = "flash"
+          [[ladders.rungs]]
+          provider = "surplus"
+          model = "deepseek-v4.1-flash"
+        "#
     ))
     .unwrap();
     let sink: &UsageSink = config.usage_sink.as_ref().unwrap();
