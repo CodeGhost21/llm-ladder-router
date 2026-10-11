@@ -441,6 +441,9 @@ Identify a conversation with the `x-ladder-session` header, or let the router us
 what your client already sends. Claude Code's `x-claude-code-session-id` and
 Codex's `session-id`, `thread-id`, or `prompt_cache_key` are recognized directly;
 generic clients can use OpenAI's `user` field or Anthropic's `metadata.user_id`.
+A request carrying none of these is named by its system prompt and ladder
+(`prefix-<hash>`), so a keyless client's conversation still lands on the seller
+holding its cached prefix.
 Responses carry `x-ladder-session` and `x-ladder-pinned`, and a dropped pin is
 logged with the reason.
 
@@ -456,6 +459,24 @@ One subtlety worth knowing: a marketplace names the sub-provider that served in
 one vocabulary and accepts steering in another — `OpenRouter` reports
 `DigitalOcean` but routes on `digitalocean`, and a quantized endpoint answers to
 `deepinfra/fp8`. The router resolves one to the other, so a pin actually lands.
+
+Inside a marketplace the pin cannot reach the seller itself: Surplus resells
+through OpenRouter, so the provider that served (`Morph`, `BaseTen`, ...) is two
+hops away. What does reach it is the conversation's identity, so on chat
+completions to Surplus and OpenRouter the session also travels as `session_id`
+and `prompt_cache_key` — the keys OpenRouter's sticky routing reads, and which
+OpenAI-style sellers use for their own caches. A caller's own values always win.
+
+## Streaming
+
+A streamed completion is relayed as it arrives. The ladder decides failover on
+the upstream's status, so every non-2xx answer is still read in full and
+classified as before, while a 2xx event stream is handed to the caller chunk by
+chunk. The first chunk is read before the response starts, so its sub-provider
+is stamped on `x-ladder-sub-provider` and pinned like a buffered answer's; usage
+is read off the same bytes and recorded when the stream ends or the caller
+hangs up. A stream that fails after its first byte cannot move to another rung —
+the caller already has part of an answer — so it reaches the caller as it is.
 
 ## Counting callers per request
 
