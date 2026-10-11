@@ -784,21 +784,7 @@ async fn walk(
                 if let Some(dispatched) = dispatched {
                     observe(meter, client.kind(), dispatched);
                 }
-                tracing::info!(
-                    ladder = %name,
-                    rung = chosen.rung,
-                    provider = %chosen.provider,
-                    model = %chosen.model,
-                    cap_per_1m = ?chosen.cap_per_1m,
-                    cheapest_per_1m = ?chosen.cheapest_per_1m,
-                    score = ?chosen.score,
-                    score_multiplier = chosen.score_multiplier,
-                    min_discount_pct = ?chosen.min_discount_pct,
-                    skipped = passed.len(),
-                    session = session.as_deref().unwrap_or("-"),
-                    pinned,
-                    "rung served"
-                );
+                log_served(name, &chosen, passed.len(), session.as_deref(), pinned);
 
                 let served_by = sub_provider_of(&response);
                 if chosen.rung < ladder_config.rungs.len() {
@@ -902,6 +888,25 @@ fn observe(
         );
         meter.record(figures);
     });
+}
+
+/// Logs the routing decision behind a served call.
+fn log_served(name: &str, chosen: &Chosen, skipped: usize, session: Option<&str>, pinned: bool) {
+    tracing::info!(
+        ladder = %name,
+        rung = chosen.rung,
+        provider = %chosen.provider,
+        model = %chosen.model,
+        cap_per_1m = ?chosen.cap_per_1m,
+        cheapest_per_1m = ?chosen.cheapest_per_1m,
+        score = ?chosen.score,
+        score_multiplier = chosen.score_multiplier,
+        min_discount_pct = ?chosen.min_discount_pct,
+        skipped,
+        session = session.unwrap_or("-"),
+        pinned,
+        "rung served"
+    );
 }
 
 /// Where a call served by `chosen` records its usage.
@@ -1022,10 +1027,7 @@ async fn dispatch(
     // A video job is polled after submission and its body rewritten, so it is
     // always read in full; every other surface leaves a served stream open.
     let opened = if wire == Wire::Video {
-        client
-            .infer(chosen, wire, body)
-            .await
-            .map(Opened::Complete)
+        client.infer(chosen, wire, body).await.map(Opened::Complete)
     } else {
         client.open(chosen, wire, body).await
     };
