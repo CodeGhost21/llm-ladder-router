@@ -132,7 +132,7 @@ async fn first_record(batches: &Arc<Mutex<Vec<serde_json::Value>>>) -> serde_jso
 async fn the_first_chunk_reaches_the_caller_before_the_upstream_has_finished() {
     let (url, upstream) = gated_upstream().await;
     upstream.send(FIRST).unwrap();
-    let response = relay(opened(&url).await, ProviderKind::Surplus, meter(None)).await;
+    let response = relay(opened(&url).await, ProviderKind::Surplus, meter(None), None).await;
     let mut body = response.into_body().into_data_stream();
 
     // The upstream has sent one chunk and is still open. A buffering relay
@@ -158,7 +158,7 @@ async fn the_first_chunk_reaches_the_caller_before_the_upstream_has_finished() {
 async fn the_sub_provider_named_by_the_first_event_is_stamped_on_the_response() {
     let (url, upstream) = gated_upstream().await;
     upstream.send(FIRST).unwrap();
-    let response = relay(opened(&url).await, ProviderKind::Surplus, meter(None)).await;
+    let response = relay(opened(&url).await, ProviderKind::Surplus, meter(None), None).await;
 
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     assert_eq!(response.headers()[HEADER_SUB_PROVIDER], "Morph");
@@ -176,7 +176,13 @@ async fn a_finished_streams_usage_is_recorded() {
         upstream.send(chunk).unwrap();
     }
     drop(upstream);
-    let response = relay(opened(&url).await, ProviderKind::Surplus, meter(Some(feed))).await;
+    let response = relay(
+        opened(&url).await,
+        ProviderKind::Surplus,
+        meter(Some(feed)),
+        None,
+    )
+    .await;
     axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -193,7 +199,13 @@ async fn a_caller_hanging_up_mid_stream_still_records_what_was_relayed() {
     let (url, upstream) = gated_upstream().await;
     let (feed, batches) = sink().await;
     upstream.send(USAGE).unwrap();
-    let response = relay(opened(&url).await, ProviderKind::Surplus, meter(Some(feed))).await;
+    let response = relay(
+        opened(&url).await,
+        ProviderKind::Surplus,
+        meter(Some(feed)),
+        None,
+    )
+    .await;
     let mut body = response.into_body().into_data_stream();
     body.next().await.unwrap().unwrap();
 
@@ -209,7 +221,7 @@ async fn a_caller_hanging_up_mid_stream_still_records_what_was_relayed() {
 async fn a_stream_that_ends_before_its_first_chunk_is_relayed_empty() {
     let (url, upstream) = gated_upstream().await;
     drop(upstream);
-    let response = relay(opened(&url).await, ProviderKind::Surplus, meter(None)).await;
+    let response = relay(opened(&url).await, ProviderKind::Surplus, meter(None), None).await;
 
     assert!(response.headers().get(HEADER_SUB_PROVIDER).is_none());
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)

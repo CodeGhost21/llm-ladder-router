@@ -8,6 +8,8 @@
 //! against the model's direct price — so a rung's dollar ceiling is restated as
 //! the equivalent discount before dispatch. See `docs/specs/marketplace-apis.md`.
 
+pub mod cost;
+
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
