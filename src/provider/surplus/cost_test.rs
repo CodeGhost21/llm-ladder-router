@@ -23,7 +23,10 @@ fn a_buffered_answer_reporting_zero_cost_gets_the_header_charge() {
 #[test]
 fn the_bodys_own_charge_wins_over_the_header() {
     let body = br#"{"usage":{"buyer_cost_micro":4}}"#;
-    assert_eq!(cost_of(&stamp_body(body, Some(99.0)).unwrap()), Some(0.000_004));
+    assert_eq!(
+        cost_of(&stamp_body(body, Some(99.0)).unwrap()),
+        Some(0.000_004)
+    );
 }
 
 #[test]
@@ -31,7 +34,10 @@ fn a_body_naming_no_charge_is_left_as_it_came() {
     assert_eq!(stamp_body(br#"{"usage":{"cost":0}}"#, None), None);
     assert_eq!(stamp_body(br#"{"choices":[]}"#, Some(4.0)), None);
     assert_eq!(stamp_body(b"not json", Some(4.0)), None);
-    assert_eq!(stamp_body(br#"{"usage":{"buyer_cost_micro":-1}}"#, None), None);
+    assert_eq!(
+        stamp_body(br#"{"usage":{"buyer_cost_micro":-1}}"#, None),
+        None
+    );
     assert!(!stamp_usage(&mut serde_json::json!(7), Some(4.0)));
 }
 
@@ -46,7 +52,10 @@ fn a_streams_usage_event_gets_its_charge_and_every_other_byte_passes_unchanged()
 
     assert!(out.starts_with(&format!(": keep-alive\n{delta}")));
     assert!(out.ends_with("\ndata: [DONE]\n\n"));
-    let usage_line = out.lines().find(|line| line.contains("buyer_cost_micro")).unwrap();
+    let usage_line = out
+        .lines()
+        .find(|line| line.contains("buyer_cost_micro"))
+        .unwrap();
     let event: serde_json::Value = serde_json::from_str(&usage_line["data: ".len()..]).unwrap();
     assert_eq!(event["usage"]["cost"], 0.000_004);
     assert_eq!(event["usage"]["prompt_tokens"], 32);

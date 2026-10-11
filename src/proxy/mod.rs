@@ -1034,7 +1034,8 @@ async fn dispatch(
     let mut dispatched = match opened {
         Ok(Opened::Complete(dispatched)) => dispatched,
         Ok(Opened::Streaming(open)) => {
-            let response = stream::relay(open, client.kind(), meter).await;
+            let stamper = stamps_cost(client, wire).then(Default::default);
+            let response = stream::relay(open, client.kind(), meter, stamper).await;
             return Attempt::Served(response, None, None);
         }
         // A transport failure is the upstream's, not the caller's.
@@ -1065,6 +1066,12 @@ async fn dispatch(
     } else {
         None
     };
+    if disposition == Disposition::Served
+        && stamps_cost(client, wire)
+        && let Some(body) = surplus::cost::stamp_body(&dispatched.body, dispatched.buyer_cost_micro)
+    {
+        dispatched.body = body;
+    }
     let built = relayed(&dispatched, |_| {
         problem(
             StatusCode::BAD_GATEWAY,
@@ -1099,6 +1106,14 @@ async fn dispatch(
             },
         },
     }
+}
+
+/// Whether a served answer gets Surplus's charge written into `usage.cost`.
+///
+/// Chat completions only: that is the surface whose clients read `usage.cost`,
+/// and the other surfaces spell usage differently.
+fn stamps_cost(client: &Client, wire: Wire) -> bool {
+    client.kind() == crate::config::ProviderKind::Surplus && wire == Wire::OpenAi
 }
 
 /// The id of the `media.job` in a body, when there is one worth relaying.

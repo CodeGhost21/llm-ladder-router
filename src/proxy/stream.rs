@@ -14,13 +14,16 @@
 //! bytes on the way past and recorded when the stream ends — or when the
 //! caller hangs up, in which case they cover what was delivered.
 
-use axum::body::Body;
+use std::sync::{Arc, Mutex};
+
+use axum::body::{Body, Bytes};
 use axum::http::HeaderValue;
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 
 use crate::config::ProviderKind;
 use crate::provider::Streaming;
+use crate::provider::surplus::cost::SseStamper;
 use crate::usage::{Feed, Figures, Record, SseTap};
 
 use super::types::HEADER_SUB_PROVIDER;
@@ -93,7 +96,16 @@ impl Drop for Metered {
 /// can be stamped on the response — the header the session pin reads — and
 /// a stream that breaks before its first byte still reaches the caller as the
 /// broken stream it is rather than as a hang.
-pub(super) async fn relay(open: Streaming, kind: ProviderKind, meter: Meter) -> Response {
+///
+/// With a `stamper`, each line is passed through it on the way out so the
+/// charge the marketplace names can be restated where clients read a cost;
+/// see [`crate::provider::surplus::cost`].
+pub(super) async fn relay(
+    open: Streaming,
+    kind: ProviderKind,
+    meter: Meter,
+    stamper: Option<SseStamper>,
+) -> Response {
     let Streaming { head, mut response } = open;
     let first = response.chunk().await;
     let served_by = match &first {
@@ -105,14 +117,21 @@ pub(super) async fn relay(open: Streaming, kind: ProviderKind, meter: Meter) -> 
         tap: Some(SseTap::new(kind)),
         meter,
     };
+    let stamper = Arc::new(Mutex::new(stamper));
+    let tail = stamper.clone();
     let body = futures_util::stream::iter(first.transpose())
         .chain(response.bytes_stream())
         .map(move |chunk| {
-            if let Ok(bytes) = &chunk {
-                metered.feed(bytes);
-            }
-            chunk
-        });
+            let bytes = chunk?;
+            metered.feed(&bytes);
+            Ok(restamp(&stamper, bytes))
+        })
+        // The stamper may hold the stream's last line; release it at the end.
+        .chain(futures_util::stream::once(async move {
+            let held = lock(&tail).take().map(SseStamper::finish);
+            Ok::<_, reqwest::Error>(Bytes::from(held.unwrap_or_default()))
+        }))
+        .filter(|chunk| std::future::ready(!matches!(chunk, Ok(bytes) if bytes.is_empty())));
 
     let mut builder = Response::builder().status(head.status);
     if let Some(content_type) = &head.content_type
@@ -128,6 +147,22 @@ pub(super) async fn relay(open: Streaming, kind: ProviderKind, meter: Meter) -> 
     builder
         .body(Body::from_stream(body))
         .map_or_else(|_| unrelayable(), IntoResponse::into_response)
+}
+
+/// Passes one chunk through the stamper, when there is one.
+fn restamp(stamper: &Mutex<Option<SseStamper>>, bytes: Bytes) -> Bytes {
+    match lock(stamper).as_mut() {
+        Some(stamper) => Bytes::from(stamper.feed(&bytes)),
+        None => bytes,
+    }
+}
+
+/// The stamper's lock; a panic elsewhere cannot leave a line half-stamped
+/// that matters more than relaying the rest.
+fn lock(stamper: &Mutex<Option<SseStamper>>) -> std::sync::MutexGuard<'_, Option<SseStamper>> {
+    stamper
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The answer when a relayed stream's head cannot be built.
