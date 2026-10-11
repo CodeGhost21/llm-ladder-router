@@ -527,6 +527,17 @@ refusing everything. The log line names the ladder and the index of the rule
 that matched, never the prompt or any other part of the request. Embeddings,
 image and video requests are never refused here.
 
+## What a call cost, where clients look for it
+
+Clients that budget a run read `usage.cost`, the field OpenRouter fills with
+what a call charged. Surplus never fills it with its own charge — a buffered
+answer carries the seller's `cost: 0` beside `is_byok: true`, and a streamed one
+carries no `cost` at all — so every Surplus call would look free. On Surplus's
+chat completions the router therefore writes Surplus's charge, in dollars, into
+`usage.cost`: from `usage.buyer_cost_micro` in the body, else from the
+`x-si-buyer-cost-micro` header. In a stream only the usage event is rewritten;
+every other byte passes through as it came.
+
 ## Usage feed
 
 Every call a rung serves is logged once with what it cost — `ladder`, `rung`,
