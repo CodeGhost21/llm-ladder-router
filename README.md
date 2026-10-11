@@ -457,6 +457,24 @@ one vocabulary and accepts steering in another — `OpenRouter` reports
 `DigitalOcean` but routes on `digitalocean`, and a quantized endpoint answers to
 `deepinfra/fp8`. The router resolves one to the other, so a pin actually lands.
 
+Inside a marketplace the pin cannot reach the seller itself: Surplus resells
+through OpenRouter, so the provider that served (`Morph`, `BaseTen`, ...) is two
+hops away. What does reach it is the conversation's identity, so on chat
+completions to Surplus and OpenRouter the session also travels as `session_id`
+and `prompt_cache_key` — the keys OpenRouter's sticky routing reads, and which
+OpenAI-style sellers use for their own caches. A caller's own values always win.
+
+## Streaming
+
+A streamed completion is relayed as it arrives. The ladder decides failover on
+the upstream's status, so every non-2xx answer is still read in full and
+classified as before, while a 2xx event stream is handed to the caller chunk by
+chunk. The first chunk is read before the response starts, so its sub-provider
+is stamped on `x-ladder-sub-provider` and pinned like a buffered answer's; usage
+is read off the same bytes and recorded when the stream ends or the caller
+hangs up. A stream that fails after its first byte cannot move to another rung —
+the caller already has part of an answer — so it reaches the caller as it is.
+
 ## Counting callers per request
 
 One router usually fronts several callers, and an upstream request is expected
