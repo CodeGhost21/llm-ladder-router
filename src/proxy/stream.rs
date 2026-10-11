@@ -29,22 +29,22 @@ use super::types::HEADER_SUB_PROVIDER;
 #[derive(Debug, Clone)]
 pub(super) struct Meter {
     /// The usage feed, when one is configured.
-    pub feed: Option<Feed>,
+    pub(super) feed: Option<Feed>,
     /// The ladder's own name, not the alias the caller used.
-    pub ladder: String,
+    pub(super) ladder: String,
     /// The surface name the usage record carries.
-    pub surface: &'static str,
+    pub(super) surface: &'static str,
     /// The rung that served.
-    pub rung: usize,
+    pub(super) rung: usize,
     /// The provider that served.
-    pub provider: String,
+    pub(super) provider: String,
     /// The model that served.
-    pub model: String,
+    pub(super) model: String,
 }
 
 impl Meter {
     /// Logs one served call's figures and hands them to the feed.
-    pub fn record(&self, figures: Figures) {
+    pub(super) fn record(&self, figures: Figures) {
         let record = Record::new(
             &self.ladder,
             self.rung,
