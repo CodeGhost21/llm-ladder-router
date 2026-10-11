@@ -773,26 +773,10 @@ async fn walk(
             break;
         };
 
-        let meter = stream::Meter {
-            feed: state.usage.clone(),
-            ladder: ladder_config.name.clone(),
-            surface: surface_name(ladder_config.surface),
-            rung: chosen.rung,
-            provider: chosen.provider.clone(),
-            model: chosen.model.clone(),
-        };
-        let attempt = dispatch(
-            client,
-            &chosen,
-            wire,
-            &body,
-            session.as_deref(),
-            confirm,
-            origin,
-            meter.clone(),
-        )
-        .await;
-        match attempt {
+        let meter = meter_for(state, ladder_config, &chosen);
+        let mut sent = body.clone();
+        crate::provider::apply_session(&mut sent, session.as_deref(), client.kind(), wire);
+        match dispatch(client, &chosen, wire, &sent, confirm, origin, meter.clone()).await {
             Attempt::Served(response, job_id, dispatched) => {
                 if let Some(id) = job_id {
                     remember_job(state, &id, name, &chosen).await;
@@ -920,6 +904,18 @@ fn observe(
     });
 }
 
+/// Where a call served by `chosen` records its usage.
+fn meter_for(state: &State, ladder: &crate::config::Ladder, chosen: &Chosen) -> stream::Meter {
+    stream::Meter {
+        feed: state.usage.clone(),
+        ladder: ladder.name.clone(),
+        surface: surface_name(ladder.surface),
+        rung: chosen.rung,
+        provider: chosen.provider.clone(),
+        model: chosen.model.clone(),
+    }
+}
+
 /// Parks a failed rung when its failure says the next request would fail too.
 async fn park_for(state: &State, ladder: &str, chosen: &Chosen, kind: Failure) {
     match kind {
@@ -1014,19 +1010,15 @@ enum Attempt {
     CallerError(Response),
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn dispatch(
     client: &Client,
     chosen: &Chosen,
     wire: Wire,
     body: &serde_json::Value,
-    session: Option<&str>,
     confirm: std::time::Duration,
     origin: Option<&str>,
     meter: stream::Meter,
 ) -> Attempt {
-    let mut body = body.clone();
-    crate::provider::apply_session(&mut body, session, client.kind(), wire);
     // A video job is polled after submission and its body rewritten, so it is
     // always read in full; every other surface leaves a served stream open.
     let opened = if wire == Wire::Video {
@@ -1035,7 +1027,7 @@ async fn dispatch(
             .await
             .map(Opened::Complete)
     } else {
-        client.open(chosen, wire, &body).await
+        client.open(chosen, wire, body).await
     };
     let mut dispatched = match opened {
         Ok(Opened::Complete(dispatched)) => dispatched,
