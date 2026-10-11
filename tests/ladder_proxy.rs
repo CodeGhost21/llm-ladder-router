@@ -2335,3 +2335,34 @@ async fn an_openhuman_prompt_cache_key_reaches_surplus_unchanged_and_keys_its_se
     assert_eq!(body["prompt_cache_key"], "tap-145feedd38f5b7dc");
     assert_eq!(body["session_id"], "tap-145feedd38f5b7dc");
 }
+
+#[tokio::test]
+async fn a_keyless_conversation_reaches_surplus_keyed_by_its_system_prompt() {
+    let (surplus, sp_recorded) = mock_surplus(Behavior::Serve("Z.ai".to_string()), 0.10).await;
+    let (openrouter, _) = mock_openrouter(Behavior::Serve("DeepInfra".to_string()), 0.20).await;
+    let router = start_router(&config_for(&surplus, &openrouter, 0.15)).await;
+
+    for turn in ["first", "second"] {
+        let response = reqwest::Client::new()
+            .post(format!("{router}/v1/chat/completions"))
+            .json(&serde_json::json!({
+                "model": "flash",
+                "messages": [
+                    { "role": "system", "content": "You remember factory lessons." },
+                    { "role": "user", "content": turn },
+                ],
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+    }
+
+    // No header and no key, yet both turns carry the same sticky-routing key,
+    // so the second lands on the seller that cached the first's prefix.
+    let bodies = sp_recorded.lock().unwrap().bodies.clone();
+    let key = bodies[0]["prompt_cache_key"].as_str().unwrap().to_string();
+    assert!(key.starts_with("prefix-"), "{key}");
+    assert_eq!(bodies[0]["session_id"], key.as_str());
+    assert_eq!(bodies[1]["prompt_cache_key"], key.as_str());
+}

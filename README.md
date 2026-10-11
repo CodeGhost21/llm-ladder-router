@@ -441,6 +441,9 @@ Identify a conversation with the `x-ladder-session` header, or let the router us
 what your client already sends. Claude Code's `x-claude-code-session-id` and
 Codex's `session-id`, `thread-id`, or `prompt_cache_key` are recognized directly;
 generic clients can use OpenAI's `user` field or Anthropic's `metadata.user_id`.
+A request carrying none of these is named by its system prompt and ladder
+(`prefix-<hash>`), so a keyless client's conversation still lands on the seller
+holding its cached prefix.
 Responses carry `x-ladder-session` and `x-ladder-pinned`, and a dropped pin is
 logged with the reason.
 
