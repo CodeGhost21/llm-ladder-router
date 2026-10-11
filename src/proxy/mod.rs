@@ -13,6 +13,7 @@
 
 pub mod jobs;
 mod refresh;
+mod stream;
 mod types;
 
 pub use refresh::{refresh_credits_once, refresh_prices_once};
@@ -36,7 +37,7 @@ use crate::credits::CreditState;
 use crate::error::{Error, Result};
 use crate::ladder::{self, Chosen, Skipped};
 use crate::pricing::PriceTable;
-use crate::provider::{Client, Disposition, Wire, surplus};
+use crate::provider::{Client, Disposition, Opened, Wire, surplus};
 use crate::session::{Pin, SessionPins};
 
 /// Builds the router's HTTP application and shared state.
@@ -772,12 +773,33 @@ async fn walk(
             break;
         };
 
-        match dispatch(client, &chosen, wire, &body, confirm, origin).await {
+        let meter = stream::Meter {
+            feed: state.usage.clone(),
+            ladder: ladder_config.name.clone(),
+            surface: surface_name(ladder_config.surface),
+            rung: chosen.rung,
+            provider: chosen.provider.clone(),
+            model: chosen.model.clone(),
+        };
+        let attempt = dispatch(
+            client,
+            &chosen,
+            wire,
+            &body,
+            session.as_deref(),
+            confirm,
+            origin,
+            meter.clone(),
+        )
+        .await;
+        match attempt {
             Attempt::Served(response, job_id, dispatched) => {
                 if let Some(id) = job_id {
                     remember_job(state, &id, name, &chosen).await;
                 }
-                observe(state, ladder_config, &chosen, client.kind(), dispatched);
+                if let Some(dispatched) = dispatched {
+                    observe(meter, client.kind(), dispatched);
+                }
                 tracing::info!(
                     ladder = %name,
                     rung = chosen.rung,
@@ -882,17 +904,7 @@ async fn choose(
 /// The caller's response is already built and is not touched: the answer it
 /// was built from is moved onto a task of its own, read there for its figures,
 /// logged, and queued for the usage feed if one is running.
-fn observe(
-    state: &State,
-    ladder: &crate::config::Ladder,
-    chosen: &Chosen,
-    kind: crate::config::ProviderKind,
-    dispatched: crate::provider::Dispatched,
-) {
-    let feed = state.usage.clone();
-    let ladder_name = ladder.name.clone();
-    let surface = surface_name(ladder.surface);
-    let (rung, provider, model) = (chosen.rung, chosen.provider.clone(), chosen.model.clone());
+fn observe(meter: stream::Meter, kind: crate::config::ProviderKind, dispatched: crate::provider::Dispatched) {
     tokio::spawn(async move {
         let figures = crate::usage::figures(
             kind,
@@ -900,12 +912,7 @@ fn observe(
             &dispatched.body,
             dispatched.buyer_cost_micro,
         );
-        let record =
-            crate::usage::Record::new(&ladder_name, rung, &provider, &model, surface, figures);
-        crate::usage::log(&record);
-        if let Some(feed) = feed {
-            feed.push(record);
-        }
+        meter.record(figures);
     });
 }
 
@@ -987,8 +994,9 @@ enum Failure {
 enum Attempt {
     /// The rung served; for a video submission, the id of the job it made;
     /// and the upstream answer the response was built from, for the usage
-    /// record.
-    Served(Response, Option<String>, crate::provider::Dispatched),
+    /// record — `None` for a relayed stream, which records its own usage as
+    /// it ends.
+    Served(Response, Option<String>, Option<crate::provider::Dispatched>),
     /// The upstream failed on its own account, and whether it was refusing on
     /// purpose or simply broken.
     Advance {
@@ -998,16 +1006,32 @@ enum Attempt {
     CallerError(Response),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch(
     client: &Client,
     chosen: &Chosen,
     wire: Wire,
     body: &serde_json::Value,
+    session: Option<&str>,
     confirm: std::time::Duration,
     origin: Option<&str>,
+    meter: stream::Meter,
 ) -> Attempt {
-    let mut dispatched = match client.infer(chosen, wire, body).await {
-        Ok(dispatched) => dispatched,
+    let mut body = body.clone();
+    crate::provider::apply_session(&mut body, session, client.kind(), wire);
+    // A video job is polled after submission and its body rewritten, so it is
+    // always read in full; every other surface leaves a served stream open.
+    let opened = if wire == Wire::Video {
+        client.infer(chosen, wire, &body).await.map(Opened::Complete)
+    } else {
+        client.open(chosen, wire, &body).await
+    };
+    let mut dispatched = match opened {
+        Ok(Opened::Complete(dispatched)) => dispatched,
+        Ok(Opened::Streaming(open)) => {
+            let response = stream::relay(open, client.kind(), meter).await;
+            return Attempt::Served(response, None, None);
+        }
         // A transport failure is the upstream's, not the caller's.
         Err(error) => {
             return Attempt::Advance {
@@ -1045,7 +1069,7 @@ async fn dispatch(
     });
 
     match disposition {
-        Disposition::Served => Attempt::Served(built, job_id, dispatched),
+        Disposition::Served => Attempt::Served(built, job_id, Some(dispatched)),
         Disposition::CallerError => Attempt::CallerError(built),
         Disposition::Advance => Attempt::Advance {
             detail: format!(
