@@ -1,5 +1,6 @@
 //! Types shared by both marketplace dialects.
 
+use crate::config::ProviderKind;
 use crate::ladder::Chosen;
 
 /// Which request/response format a caller is speaking.
@@ -186,6 +187,50 @@ pub fn apply_reasoning_effort(body: &mut serde_json::Value, chosen: &Chosen, wir
         _ => {
             object.insert("reasoning_effort".to_string(), effort.clone().into());
         }
+    }
+}
+
+/// Hands a conversation's session to a marketplace that routes on it.
+///
+/// A prompt cache is warm only on the seller that already read the prefix,
+/// and the router's own session pin cannot reach that far into a marketplace:
+/// Surplus resells through `OpenRouter`, so the seller that served
+/// (`Morph`, `BaseTen`, ...) is a terminal provider two hops away, not one the
+/// router can steer to. Measured 2026-10-12 against `deepseek-v4.1-flash`:
+/// naming one in `provider_order` changed nothing, while a request that hopped
+/// sellers paid its whole 10k-token prefix again and ran up to three times
+/// slower than one that stayed.
+///
+/// What does reach that far is the conversation's identity. Surplus's chat
+/// surface passes unknown fields through to its sellers, and `OpenRouter` keys
+/// its sticky routing on `session_id` — from the first successful request,
+/// where without one it waits for a cache hit — falling back to the
+/// OpenAI-style `prompt_cache_key`, which the `OpenAI` and `DeepSeek` sellers
+/// themselves also read. So both are set to the router's session.
+///
+/// The caller's own values always win, and nothing is sent without a session,
+/// to any other marketplace, or on any surface but chat completions: Surplus
+/// rebuilds its Anthropic and responses requests from a fixed field list, and
+/// the direct providers have no seller to stay on.
+pub fn apply_session(
+    body: &mut serde_json::Value,
+    session: Option<&str>,
+    kind: ProviderKind,
+    wire: Wire,
+) {
+    let Some(session) = session else {
+        return;
+    };
+    if wire != Wire::OpenAi || !matches!(kind, ProviderKind::Surplus | ProviderKind::OpenRouter) {
+        return;
+    }
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    for field in ["session_id", "prompt_cache_key"] {
+        object
+            .entry(field)
+            .or_insert_with(|| serde_json::Value::from(session));
     }
 }
 
