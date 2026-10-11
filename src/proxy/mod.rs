@@ -13,6 +13,7 @@
 
 pub mod jobs;
 mod refresh;
+mod stream;
 mod types;
 
 pub use refresh::{refresh_credits_once, refresh_prices_once};
@@ -36,7 +37,7 @@ use crate::credits::CreditState;
 use crate::error::{Error, Result};
 use crate::ladder::{self, Chosen, Skipped};
 use crate::pricing::PriceTable;
-use crate::provider::{Client, Disposition, Wire, surplus};
+use crate::provider::{Client, Disposition, Opened, Wire, surplus};
 use crate::session::{Pin, SessionPins};
 
 /// Builds the router's HTTP application and shared state.
@@ -772,27 +773,18 @@ async fn walk(
             break;
         };
 
-        match dispatch(client, &chosen, wire, &body, confirm, origin).await {
+        let meter = meter_for(state, ladder_config, &chosen);
+        let mut sent = body.clone();
+        crate::provider::apply_session(&mut sent, session.as_deref(), client.kind(), wire);
+        match dispatch(client, &chosen, wire, &sent, confirm, origin, meter.clone()).await {
             Attempt::Served(response, job_id, dispatched) => {
                 if let Some(id) = job_id {
                     remember_job(state, &id, name, &chosen).await;
                 }
-                observe(state, ladder_config, &chosen, client.kind(), dispatched);
-                tracing::info!(
-                    ladder = %name,
-                    rung = chosen.rung,
-                    provider = %chosen.provider,
-                    model = %chosen.model,
-                    cap_per_1m = ?chosen.cap_per_1m,
-                    cheapest_per_1m = ?chosen.cheapest_per_1m,
-                    score = ?chosen.score,
-                    score_multiplier = chosen.score_multiplier,
-                    min_discount_pct = ?chosen.min_discount_pct,
-                    skipped = passed.len(),
-                    session = session.as_deref().unwrap_or("-"),
-                    pinned,
-                    "rung served"
-                );
+                if let Some(dispatched) = dispatched {
+                    observe(meter, client.kind(), dispatched);
+                }
+                log_served(name, &chosen, passed.len(), session.as_deref(), pinned);
 
                 let served_by = sub_provider_of(&response);
                 if chosen.rung < ladder_config.rungs.len() {
@@ -883,16 +875,10 @@ async fn choose(
 /// was built from is moved onto a task of its own, read there for its figures,
 /// logged, and queued for the usage feed if one is running.
 fn observe(
-    state: &State,
-    ladder: &crate::config::Ladder,
-    chosen: &Chosen,
+    meter: stream::Meter,
     kind: crate::config::ProviderKind,
     dispatched: crate::provider::Dispatched,
 ) {
-    let feed = state.usage.clone();
-    let ladder_name = ladder.name.clone();
-    let surface = surface_name(ladder.surface);
-    let (rung, provider, model) = (chosen.rung, chosen.provider.clone(), chosen.model.clone());
     tokio::spawn(async move {
         let figures = crate::usage::figures(
             kind,
@@ -900,13 +886,39 @@ fn observe(
             &dispatched.body,
             dispatched.buyer_cost_micro,
         );
-        let record =
-            crate::usage::Record::new(&ladder_name, rung, &provider, &model, surface, figures);
-        crate::usage::log(&record);
-        if let Some(feed) = feed {
-            feed.push(record);
-        }
+        meter.record(figures);
     });
+}
+
+/// Logs the routing decision behind a served call.
+fn log_served(name: &str, chosen: &Chosen, skipped: usize, session: Option<&str>, pinned: bool) {
+    tracing::info!(
+        ladder = %name,
+        rung = chosen.rung,
+        provider = %chosen.provider,
+        model = %chosen.model,
+        cap_per_1m = ?chosen.cap_per_1m,
+        cheapest_per_1m = ?chosen.cheapest_per_1m,
+        score = ?chosen.score,
+        score_multiplier = chosen.score_multiplier,
+        min_discount_pct = ?chosen.min_discount_pct,
+        skipped,
+        session = session.unwrap_or("-"),
+        pinned,
+        "rung served"
+    );
+}
+
+/// Where a call served by `chosen` records its usage.
+fn meter_for(state: &State, ladder: &crate::config::Ladder, chosen: &Chosen) -> stream::Meter {
+    stream::Meter {
+        feed: state.usage.clone(),
+        ladder: ladder.name.clone(),
+        surface: surface_name(ladder.surface),
+        rung: chosen.rung,
+        provider: chosen.provider.clone(),
+        model: chosen.model.clone(),
+    }
 }
 
 /// Parks a failed rung when its failure says the next request would fail too.
@@ -987,8 +999,13 @@ enum Failure {
 enum Attempt {
     /// The rung served; for a video submission, the id of the job it made;
     /// and the upstream answer the response was built from, for the usage
-    /// record.
-    Served(Response, Option<String>, crate::provider::Dispatched),
+    /// record — `None` for a relayed stream, which records its own usage as
+    /// it ends.
+    Served(
+        Response,
+        Option<String>,
+        Option<crate::provider::Dispatched>,
+    ),
     /// The upstream failed on its own account, and whether it was refusing on
     /// purpose or simply broken.
     Advance {
@@ -1005,9 +1022,21 @@ async fn dispatch(
     body: &serde_json::Value,
     confirm: std::time::Duration,
     origin: Option<&str>,
+    meter: stream::Meter,
 ) -> Attempt {
-    let mut dispatched = match client.infer(chosen, wire, body).await {
-        Ok(dispatched) => dispatched,
+    // A video job is polled after submission and its body rewritten, so it is
+    // always read in full; every other surface leaves a served stream open.
+    let opened = if wire == Wire::Video {
+        client.infer(chosen, wire, body).await.map(Opened::Complete)
+    } else {
+        client.open(chosen, wire, body).await
+    };
+    let mut dispatched = match opened {
+        Ok(Opened::Complete(dispatched)) => dispatched,
+        Ok(Opened::Streaming(open)) => {
+            let response = stream::relay(open, client.kind(), meter).await;
+            return Attempt::Served(response, None, None);
+        }
         // A transport failure is the upstream's, not the caller's.
         Err(error) => {
             return Attempt::Advance {
@@ -1045,7 +1074,7 @@ async fn dispatch(
     });
 
     match disposition {
-        Disposition::Served => Attempt::Served(built, job_id, dispatched),
+        Disposition::Served => Attempt::Served(built, job_id, Some(dispatched)),
         Disposition::CallerError => Attempt::CallerError(built),
         Disposition::Advance => Attempt::Advance {
             detail: format!(
@@ -1238,7 +1267,8 @@ async fn remember(
 ///
 /// The configured header wins; otherwise native Claude Code and Codex
 /// identifiers, then the identifiers the two APIs already carry, are used so
-/// an unmodified client still gets sticky routing.
+/// an unmodified client still gets sticky routing. A caller with none of them
+/// is named by its system prompt; see [`crate::session::prefix_session`].
 fn session_of(state: &State, headers: &HeaderMap, body: &serde_json::Value) -> Option<String> {
     if !state.config.sessions.enabled {
         return None;
@@ -1271,6 +1301,7 @@ fn session_of(state: &State, headers: &HeaderMap, body: &serde_json::Value) -> O
         })
         .map(|session| session.trim().to_string())
         .filter(|session| !session.is_empty())
+        .or_else(|| crate::session::prefix_session(body))
 }
 
 /// Reads one UTF-8 request header as an owned session identifier.
